@@ -9,6 +9,6 @@ public interface ConnectionPool {
     Connection getConnection() throws InterruptedException;
 
     // Return the connection into pool if it was there
-    boolean returnConn(Connection connection);
+    boolean returnConn(Connection connection) throws SQLException;
 
 }

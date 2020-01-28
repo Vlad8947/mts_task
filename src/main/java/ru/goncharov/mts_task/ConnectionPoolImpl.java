@@ -99,7 +99,7 @@ public class ConnectionPoolImpl implements ConnectionPool {
      * @return null if connection wasn't in pool.
      */
     @Override
-    public boolean returnConn(Connection connection) {
+    public boolean returnConn(Connection connection) throws SQLException {
         // If connection isn't exist in the collection of used connection,
         //      return false.
         if (!activeConnections.contains(connection)) {
@@ -107,6 +107,22 @@ public class ConnectionPoolImpl implements ConnectionPool {
         }
         // Remove connection from the collection of used connection
         activeConnections.remove(connection);
+
+        // If connection is not valid
+        if (!connection.isValid(1)) {
+            // If connection is not closed
+            if (!connection.isClosed()) {
+                // Close connection
+                try {
+                    connection.close();
+                } catch (SQLException e) {
+                    e.printStackTrace();
+                }
+            }
+            // Create new connection
+            connection = DriverManager.getConnection(url, user, password);
+        }
+
         // Add connection into pool
         connections.add(new InactiveConnection(connection));
         return true;
