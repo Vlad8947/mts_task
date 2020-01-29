@@ -7,6 +7,7 @@ import java.util.Timer;
 import java.util.TimerTask;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 
 public class ConnectionPoolImpl implements ConnectionPool {
@@ -15,6 +16,8 @@ public class ConnectionPoolImpl implements ConnectionPool {
     private ArrayBlockingQueue<InactiveConnection> connections;
     // Сonnections that are used from pool
     private CopyOnWriteArrayList<Connection> activeConnections = new CopyOnWriteArrayList<>();
+    // If semaphore has permits, then connection will can be create
+    private Semaphore connSemaphore;
 
     // SQL driver
     private String driver;
@@ -51,13 +54,26 @@ public class ConnectionPoolImpl implements ConnectionPool {
     }
 
     // Open sql-connections and add in pool
-    private void connectionsInit() throws InterruptedException, SQLException {
+    private void connectionsInit() throws SQLException {
         connections = new ArrayBlockingQueue<>(connectionAmount);
+        connSemaphore = new Semaphore(connectionAmount);
         for (int i = 0; i < connectionAmount; i++) {
             // Create sql-connection
             Connection connection = DriverManager.getConnection(url, user, password);
             // Add connection in pool
+            addConnInPool(connection);
+        }
+    }
+
+    private void addConnInPool(Connection connection) {
+        if (connSemaphore.tryAcquire()) {
             connections.add(new InactiveConnection(connection));
+        }
+    }
+
+    private void removeConnFromPool(Connection connection) {
+        if (connections.remove(connection)) {
+            connSemaphore.release();
         }
     }
 
@@ -81,10 +97,18 @@ public class ConnectionPoolImpl implements ConnectionPool {
      * Get opened sql-connection from pool if it exist
      * @return null if pool is empty
      */
-    public Connection getConnection() throws InterruptedException {
-        // Poll connection from queue if it exist
-        Connection connection = connections.poll(waitConnMilliSec, TimeUnit.MILLISECONDS)
-                .getConnection();
+    @Override
+    public Connection getConnection() throws InterruptedException, SQLException {
+        Connection connection;
+        // If there are no inactive connection and Semaphore have permit for add new connection
+        if (connections.isEmpty() && connSemaphore.tryAcquire()) {
+            // Create new connection
+            connection = DriverManager.getConnection(url, user, password);
+        } else {
+            // Poll connection from queue if it exist
+            connection = connections.poll(waitConnMilliSec, TimeUnit.MILLISECONDS)
+                    .getConnection();
+        }
         // If connection not exist, return null
         if (connection == null) {
             return null;
@@ -119,11 +143,16 @@ public class ConnectionPoolImpl implements ConnectionPool {
                     e.printStackTrace();
                 }
             }
-            // Create new connection
-            connection = DriverManager.getConnection(url, user, password);
+            try {
+                // Create new connection
+                connection = DriverManager.getConnection(url, user, password);
+            } catch (SQLException e) {
+                // Connection was not returned in pool, so release connection permit
+                connSemaphore.release();
+                throw e;
+            }
         }
-
-        // Add connection into pool
+        // Add connection in pool
         connections.add(new InactiveConnection(connection));
         return true;
     }
@@ -150,7 +179,7 @@ public class ConnectionPoolImpl implements ConnectionPool {
                     e.printStackTrace();
                 }
                 // Remove connection from pool
-                connections.remove(inactiveConn);
+                removeConnFromPool(inactiveConn.getConnection());
             }
         }
     }
